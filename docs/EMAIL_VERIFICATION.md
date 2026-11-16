@@ -60,14 +60,15 @@ Every scanned message is stored in `email_verification_messages` with sender, su
 
 ## IMAP implementation and TLS
 
-The PHP `imap` extension is **not required**. `App\Core\ImapClient` is a small RFC 3501 client that:
+The PHP `imap` extension is **not required**. `App\Core\ImapClient` is an RFC 3501 client written for Gmail:
 
-- opens an implicit TLS socket (default `ssl://imap.gmail.com:993`);
-- verifies the peer certificate and peer name;
-- logs in with the Gmail address and App Password;
-- selects the mailbox, searches `UNSEEN` UIDs and fetches `BODY.PEEK[]`;
-- marks a processed message `\Seen` only after it has been recorded;
-- never disables certificate verification.
+- implicit TLS (`ssl://imap.gmail.com:993`) and STARTTLS (`starttls`, port 143);
+- certificate and peer-name verification, with `IMAP_CA_BUNDLE` for hosts without a system store;
+- `LOGIN` with a Google App Password **or** `AUTHENTICATE XOAUTH2` with an OAuth 2.0 access token (SASL-IR when advertised, continuation handshake otherwise);
+- binary-safe literal handling, so large multipart alert emails are never truncated;
+- `CAPABILITY`, `ID`, `LIST`, `SELECT`/`EXAMINE`, `UID SEARCH`, `UID FETCH`, `UID STORE`, `NOOP`;
+- `UIDVALIDITY` tracking so a rebuilt mailbox cannot cause the scanner to skip or replay mail;
+- Gmail-aware failure hints (`[AUTHENTICATIONFAILED]`, `Application-specific password required`, `Web login required`, `Too many simultaneous connections`, `IMAP access is disabled`, …).
 
 If the host has no system CA bundle, set an absolute path:
 
@@ -77,6 +78,8 @@ IMAP_CA_BUNDLE=/etc/ssl/certs/cacert.pem
 
 Without a valid CA bundle, Gmail TLS verification fails and the account status becomes `failed`. This is intentional: the platform does not silently accept invalid certificates.
 
+Unencrypted IMAP exists only for local testing and is refused by the web form unless `IMAP_ALLOW_PLAINTEXT=1`.
+
 ### Google App Password
 
 1. Enable 2-Step Verification on the FamPay-linked Google account.
@@ -85,6 +88,73 @@ Without a valid CA bundle, Gmail TLS verification fails and the account status b
 4. Paste the 16-character value into MAXXfam. Spaces are ignored.
 
 Normal Google account passwords cannot be used for IMAP.
+
+### Gmail OAuth 2.0
+
+Use OAuth when the Google account is a Workspace mailbox, or when an administrator has disabled App Passwords. No password is stored: Google issues a refresh token, MAXXfam keeps it encrypted with AES-256-GCM, and access can be revoked from the Google account at any time.
+
+1. In Google Cloud Console create a project and enable the **Gmail API** (OAuth consent also needs the `https://mail.google.com/` scope; add the merchant as a test user while the app is unverified).
+2. Create an **OAuth client ID → Web application** with this authorised redirect URI:
+   `https://your-domain/user/gmail-oauth.php`
+3. Set the environment:
+
+```dotenv
+GMAIL_OAUTH_CLIENT_ID=xxxx.apps.googleusercontent.com
+GMAIL_OAUTH_CLIENT_SECRET=xxxx
+GMAIL_OAUTH_REDIRECT_URI=https://your-domain/user/gmail-oauth.php
+```
+
+4. The merchant opens **Integration → Connect with Google** and approves access. The account is switched to `auth_method = oauth2` and a refresh token is stored.
+5. Run **Test IMAP** to confirm. Access tokens are refreshed automatically 2 minutes before expiry and cached encrypted in the account row.
+
+The App Password form keeps working and stays the default. Saving the form while OAuth is active does not delete the refresh token; use **Connect with Google** again to rotate it.
+
+---
+
+## Advanced scan controls
+
+These columns exist per account and are managed by the administrator (defaults keep the behaviour described above):
+
+| Column | Default | Meaning |
+|---|---|---|
+| `folder` | `INBOX` | Gmail label to read. Use the full name, e.g. `[Gmail]/All Mail`, to include archived mail. |
+| `search_days` | `0` | `0` = all unseen mail. `N` adds `SINCE` so only the last N days are searched. |
+| `mark_read` | `1` | Mark processed messages `\Seen`. Turn off to keep the mailbox untouched (messages are still de-duplicated by UID). |
+| `uidvalidity` / `last_uid` | auto | Incremental scanning. A changed `UIDVALIDITY` resets the cursor automatically. |
+| `auth_method` | `app_password` | `app_password` or `oauth2`. |
+
+---
+
+## Doctor: prove the mailbox before trusting the cron
+
+`scripts/imap-doctor.php` runs the same nine steps as the panel, but from the CLI, with timings and fixes:
+
+```bash
+php scripts/imap-doctor.php --user=you@gmail.com --upi=name@fam --prompt
+```
+
+It checks credentials, DNS, TLS, capabilities, authentication, folder select, mailbox list, search and a live parse of the newest unseen alert, then prints the parsed amount, UTR and UPI. Exit code `0` means the cron will work.
+
+Other useful forms:
+
+```bash
+# Use the stored account of merchant 12 (needs DB + APP_KEY)
+php scripts/imap-doctor.php --merchant=12
+
+# Save new credentials for that merchant first, then diagnose
+php scripts/imap-doctor.php --merchant=12 --save --user=you@gmail.com --upi=name@fam --prompt
+
+# Machine readable, for monitoring
+php scripts/imap-doctor.php --merchant=12 --json
+```
+
+Options include `--host`, `--port`, `--encryption` (`ssl`, `starttls`, `tls`, `none`), `--folder`, `--sender`, `--days`, `--limit` and `--json`. Keep the App Password out of shell history with `GMAIL_APP_PASSWORD` in `.env` or `--prompt`.
+
+The protocol layer has an offline regression test that runs a scripted IMAP server, so it works without a Gmail account or network:
+
+```bash
+php tests/imap_client_test.php
+```
 
 ---
 
@@ -117,8 +187,15 @@ Scans are limited by `email_verification_max_per_run` (default 20) and by the or
 | Symptom | Likely cause |
 |---|---|
 | `IMAP connection failed: certificate verify failed` | No trusted CA bundle. Set `IMAP_CA_BUNDLE` or configure `openssl.cafile`. |
-| `IMAP command rejected: ... Invalid credentials` | Wrong Gmail address, normal password instead of App Password, or App Password revoked. |
-| Status `connected` but `checked = 0` | No unseen messages, or the mailbox folder is wrong. |
+| `IMAP command rejected: ... Invalid credentials` / `[AUTHENTICATIONFAILED]` | Wrong Gmail address, normal account password instead of an App Password, or the App Password was revoked. |
+| `Application-specific password required` | The account has no App Password yet. Enable 2-Step Verification, create one, or switch the mailbox to OAuth 2.0. |
+| `Web login required` / "Please log in via your web browser" | Google flagged the sign-in. Sign in to the mailbox once in a browser, then use an App Password or OAuth. |
+| `IMAP access is disabled` | Gmail Settings → Forwarding and POP/IMAP → Enable IMAP. Workspace admins can enforce this. |
+| `Too many simultaneous connections` | Gmail allows 15 IMAP sessions per account. Close other clients or lower the cron frequency. |
+| `Mailbox not found` / `NONEXISTENT` | Wrong folder name. Gmail labels need their full path, e.g. `[Gmail]/All Mail`. |
+| OAuth: `invalid_grant` / `expired` | Refresh token revoked or client secret changed. Reconnect with **Connect with Google**. |
+| OAuth: no refresh token returned | Google only returns one on first consent. Remove the app from Google Account → Security → Third-party access, then reconnect. |
+| Status `connected` but `checked = 0` | No unseen messages, everything already processed (`last_uid`), or the wrong folder. |
 | Messages `ignored` | Sender not trusted, configured UPI missing, or body is not a credit alert. |
 | Messages `unmatched` | No pending order with that exact amount inside the lookback window. |
 | Messages `ambiguous` | Several pending orders share the amount; reconcile manually. |

@@ -15,6 +15,7 @@ use App\Core\Settings;
 use App\Core\View;
 use App\Http\UserPage;
 use App\Services\EmailVerificationService;
+use App\Services\GmailOAuth;
 
 [$user, $merchant] = UserPage::boot();
 $merchantId = (int) $merchant['id'];
@@ -122,4 +123,5 @@ View::render('user.integration', [
     'emailAccount' => $emailAccount,
     'emailRecent' => $emailRecent,
     'emailVerificationEnabled' => Settings::bool('email_verification_enabled', true),
+    'oauthAvailable' => GmailOAuth::configured(),
 ], 'dashboard');

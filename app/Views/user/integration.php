@@ -10,6 +10,8 @@ $mailState = $emailAccount ? (string) $emailAccount['connection_status'] : 'not_
 if ($emailAccount && (int) $emailAccount['is_enabled'] !== 1) { $mailState = 'disabled'; }
 $mailMeta = status_meta($mailState);
 $mailConfigured = $emailAccount !== null;
+$oauthAvailable = $oauthAvailable ?? false;
+$mailAuthMethod = $emailAccount ? (string) ($emailAccount['auth_method'] ?? 'app_password') : 'app_password';
 ?>
 <div class="card max-w-3xl overflow-hidden">
     <div class="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-start sm:justify-between dark:border-white/[0.06]">
@@ -46,9 +48,24 @@ $mailConfigured = $emailAccount !== null;
         <button class="btn-primary btn-sm w-full sm:w-auto" <?= $emailVerificationEnabled ? '' : 'disabled' ?>><?= $mailConfigured ? 'Update Gmail IMAP account' : 'Connect Gmail IMAP account' ?></button>
     </form>
 
+    <?php if ($oauthAvailable && $mailConfigured): ?>
+    <div class="border-t border-slate-100 px-5 py-4 dark:border-white/[0.06]">
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+                <p class="text-[11px] font-bold text-slate-800 dark:text-slate-200">OAuth 2.0 (recommended for Google Workspace)</p>
+                <p class="text-[10px] leading-5 text-slate-500">No password stored. Google issues a refresh token that this server keeps encrypted, and access is revocable from your Google account at any time.</p>
+            </div>
+            <a href="<?= e(url('/user/gmail-oauth.php?action=start')) ?>" class="btn-secondary btn-sm shrink-0 justify-center"><i data-lucide="shield-check" class="h-3.5 w-3.5"></i> <?= $mailAuthMethod === 'oauth2' ? 'Reconnect Google' : 'Connect with Google' ?></a>
+        </div>
+        <?php if ($mailAuthMethod === 'oauth2'): ?>
+        <p class="mt-2 text-[9.5px] font-semibold text-emerald-600 dark:text-emerald-400">OAuth 2.0 is active for this mailbox. The App Password field is ignored while OAuth is connected.</p>
+        <?php endif; ?>
+    </div>
+    <?php endif; ?>
+
     <div class="border-t border-slate-100 px-5 py-4 dark:border-white/[0.06]">
         <div class="grid gap-2 text-[10px] sm:grid-cols-4">
-            <div class="rounded-xl border border-slate-200 px-3 py-2 dark:border-white/10"><p class="font-bold uppercase tracking-[0.1em] text-slate-400">App password</p><p class="mt-1 font-mono text-[11px] text-slate-700 dark:text-slate-300"><?= $mailConfigured ? '•••• ' . e((string) $emailAccount['app_password_last4']) : 'Not saved' ?></p></div>
+            <div class="rounded-xl border border-slate-200 px-3 py-2 dark:border-white/10"><p class="font-bold uppercase tracking-[0.1em] text-slate-400">Auth method</p><p class="mt-1 text-[10.5px] text-slate-700 dark:text-slate-300"><?= $mailAuthMethod === 'oauth2' ? 'OAuth 2.0' : 'App password' ?></p></div>
             <div class="rounded-xl border border-slate-200 px-3 py-2 dark:border-white/10"><p class="font-bold uppercase tracking-[0.1em] text-slate-400">Last test</p><p class="mt-1 text-[10.5px] text-slate-700 dark:text-slate-300"><?= $emailAccount && $emailAccount['last_test_at'] ? e(ist($emailAccount['last_test_at'], 'd M, H:i')) : 'Never' ?></p></div>
             <div class="rounded-xl border border-slate-200 px-3 py-2 dark:border-white/10"><p class="font-bold uppercase tracking-[0.1em] text-slate-400">Last scan</p><p class="mt-1 text-[10.5px] text-slate-700 dark:text-slate-300"><?= $emailAccount && $emailAccount['last_checked_at'] ? e(ist($emailAccount['last_checked_at'], 'd M, H:i')) : 'Never' ?></p></div>
             <div class="rounded-xl border border-slate-200 px-3 py-2 dark:border-white/10"><p class="font-bold uppercase tracking-[0.1em] text-slate-400">Messages / verified</p><p class="mt-1 text-[10.5px] text-slate-700 dark:text-slate-300"><?= (int) ($emailAccount['total_messages'] ?? 0) ?> / <?= (int) ($emailAccount['total_verified'] ?? 0) ?></p></div>

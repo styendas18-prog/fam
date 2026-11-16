@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+vendor/
+node_modules/
+.runtime/
+storage/logs/*
+storage/cache/*
+storage/invoices/*
+!storage/logs/.gitkeep
+!storage/cache/.gitkeep
+!storage/invoices/.gitkeep
+storage/installed.lock
+.DS_Store
+Thumbs.db
+*.log
+tests/.tmp/
